@@ -34,7 +34,7 @@ CRAWL_QUEUE_TABLE_SCHEMA = """
 """
 
 
-NUMBER_OF_WORKERS = 50
+NUMBER_OF_WORKERS = 100
 
 
 logging.basicConfig(
@@ -46,7 +46,7 @@ logging.basicConfig(
 )
 
 
-db_write_lock = asyncio.Lock()
+db_write_lock = None
 
 
 async def main():
@@ -56,6 +56,12 @@ async def main():
     except IndexError:
         print("Usage: python crawl.py <db_path>")
         sys.exit(1)
+
+    # Need to intialize the lock within the event loop; can't do it at the
+    # global level before the event loop is initialized; see
+    # https://chat.openai.com/share/ab2495d7-ce07-4f69-83e8-52d825beefdd
+    global db_write_lock
+    db_write_lock = asyncio.Lock()
 
     # Create the database connection
     db_conn = await aiosqlite.connect(db_path, isolation_level=None)
@@ -185,7 +191,7 @@ async def worker(worker_id, http_client, db_conn):
         q = """
             SELECT *
             FROM base_hostname_queue_sample
-            WHERE MOD(queue_id, ?) = ?
+            WHERE queue_id % ? = ?
             LIMIT 100;
         """
         async with db_conn.execute(q, (NUMBER_OF_WORKERS, worker_id)) as cursor:
