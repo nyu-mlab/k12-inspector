@@ -13,7 +13,17 @@ from tqdm import tqdm
 import pandas as pd
 
 
-NUMBER_OF_WORKERS = 80
+NUMBER_OF_WORKERS = 15
+
+SCHOOL_INFO_TABLE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS school_info (
+        school_name TEXT,
+        nces_website TEXT,
+        actual_website TEXT,
+        actual_website_status TEXT
+    );
+    CREATE INDEX IF NOT EXISTS nces_website_index ON school_info (nces_website);
+"""
 
 HTTP_CLIENT_CONFIG = {
     'follow_redirects': True,
@@ -55,13 +65,15 @@ async def db_fetch_all(db, q, args=[]):
 
 async def worker(worker_id, client, db):
 
-    # Find schools where the actual_website_status is pending
+    # Find schools where the actual_website_status is pending or previously
+    # crawled but unsuccessful
     q = """
         SELECT nces_website, MIN(rowid) as min_id
         FROM school_info
-        WHERE actual_website_status = 'pending'
+        WHERE actual_website_status != '200'
         GROUP BY nces_website
         HAVING MOD(min_id, ?) = ?
+        ORDER BY RANDOM();
     """
     async for row in get_db_itr(db, q, (NUMBER_OF_WORKERS, worker_id)):
 
@@ -92,7 +104,7 @@ async def worker(worker_id, client, db):
             q = """
                 SELECT count(*) AS pending_count
                 FROM school_info
-                WHERE actual_website_status = 'pending'
+                WHERE actual_website_status != '200'
             """
             async for row in get_db_itr(db, q):
                 pending_count = row['pending_count']
@@ -115,16 +127,7 @@ async def initialize_db(input_csv, db):
     df = df[df['SCH_NAME'].notnull() & df['WEBSITE'].notnull()].drop_duplicates()
 
     # Create the schema
-    q = """
-        CREATE TABLE IF NOT EXISTS school_info (
-            school_name TEXT,
-            nces_website TEXT,
-            actual_website TEXT,
-            actual_website_status TEXT
-        );
-        CREATE INDEX IF NOT EXISTS nces_website_index ON school_info (nces_website);
-    """
-    await db.executescript(q)
+    await db.executescript(SCHOOL_INFO_TABLE_SCHEMA)
 
     # Insert contents from the dataframe
     print('Processing the dataframe...')
