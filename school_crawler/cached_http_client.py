@@ -181,7 +181,10 @@ class CachedHTTPClient(object):
             for a in soup.find_all('a'):
                 href = a.get('href')
                 if href:
-                    href = urljoin(redirected_url, href)
+                    try:
+                        href = urljoin(redirected_url, href)
+                    except ValueError:
+                        continue
                     if is_valid_url(href):
                         href_set.add(href)
             href_list = list(href_set)
