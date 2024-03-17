@@ -24,9 +24,8 @@ CRAWL_QUEUE_TABLE_SCHEMA = """
         referral_queue_id INTEGER
     );
 
-    -- Create indices for base_hostname and depth for faster lookups
     CREATE INDEX IF NOT EXISTS crawl_queue_base_hostname ON crawl_queue (base_hostname);
-    CREATE INDEX IF NOT EXISTS crawl_queue_depth ON crawl_queue (depth);
+    CREATE INDEX IF NOT EXISTS crawl_queue_result_webpage_id ON crawl_queue (result_webpage_id);
 
     -- We need to make sure we don't have duplicate (school_name, url_to_visit) pairs
     CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_school_url ON crawl_queue (school_name, url_to_visit);
@@ -34,7 +33,7 @@ CRAWL_QUEUE_TABLE_SCHEMA = """
 """
 
 
-NUMBER_OF_WORKERS = 100
+NUMBER_OF_WORKERS = 30
 
 
 logging.basicConfig(
@@ -111,8 +110,7 @@ async def initialize_views(db_conn):
             min(queue_id) AS min_queue_id
         FROM crawl_queue
         WHERE
-            result_webpage_id IS NULL AND
-            is_valid_url(url_to_visit)
+            result_webpage_id IS NULL
         GROUP BY base_hostname;
 
         -- Shows the actual queue contents based on these min_queue_ids
@@ -207,6 +205,9 @@ async def worker(worker_id, http_client, db_conn):
 
 async def process_crawl_queue_row(row, http_client, db_conn):
 
+    if not cached_http_client.is_valid_url(row['url_to_visit']):
+        return
+
     try:
         # Visit the URL
         (webpage_id, redirected_url, href_list) = await http_client.visit_url(row['url_to_visit'])
@@ -267,10 +268,6 @@ async def process_crawl_queue_row(row, http_client, db_conn):
         """
         async with db_write_lock:
             await db_conn.executemany(q, args)
-
-    logging.info(f'Inserted {len(href_list)} new URLs into the crawl queue for {row["url_to_visit"]}')
-
-
 
 
 def get_hostname_from_url(url) -> str:
