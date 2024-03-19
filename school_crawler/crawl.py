@@ -33,7 +33,8 @@ CRAWL_QUEUE_TABLE_SCHEMA = """
 """
 
 
-NUMBER_OF_WORKERS = 30
+NUMBER_OF_WORKERS = 50
+number_of_random_base_hostnames = 10 * NUMBER_OF_WORKERS
 
 
 logging.basicConfig(
@@ -102,32 +103,25 @@ async def initialize_udfs(db_conn):
 async def initialize_views(db_conn):
     """Initializes the views in the database."""
 
-    q = """
-        -- Shows the next unprocessed queue_id for each base_hostname
-        CREATE VIEW IF NOT EXISTS base_hostname_min_queue_id AS
-        SELECT
-            base_hostname,
-            min(queue_id) AS min_queue_id
+    q = f"""
+        -- Select a small number of hostnames
+        CREATE TEMPORARY VIEW IF NOT EXISTS random_base_hostnames AS
+        SELECT base_hostname
         FROM crawl_queue
-        WHERE
-            result_webpage_id IS NULL
-        GROUP BY base_hostname;
+        GROUP BY base_hostname
+        ORDER BY RANDOM()
+        LIMIT {number_of_random_base_hostnames};
 
-        -- Shows the actual queue contents based on these min_queue_ids
-        CREATE VIEW IF NOT EXISTS base_hostname_queue_sample AS
+        -- Get the first unvisited URL from each hostname
+        CREATE TEMPORARY VIEW IF NOT EXISTS random_base_hostname_with_min_queue_id AS
         SELECT
-            c.queue_id AS queue_id,
-            c.school_name AS school_name,
-            c.base_hostname AS base_hostname,
-            c.depth AS depth,
-            c.url_to_visit AS url_to_visit,
-            c.result_webpage_id AS result_webpage_id,
-            c.referral_queue_id AS referral_queue_id
-        FROM crawl_queue c
-        JOIN base_hostname_min_queue_id b
-        ON c.queue_id = b.min_queue_id
-        ORDER BY RANDOM();
-
+            a.base_hostname AS base_hostname,
+            min(b.queue_id) as min_queue_id
+        FROM random_base_hostnames a
+        JOIN crawl_queue b
+        ON a.base_hostname = b.base_hostname
+        WHERE b.result_webpage_id IS NULL
+        GROUP BY a.base_hostname;
     """
     async with db_write_lock:
         await db_conn.executescript(q)
@@ -172,35 +166,62 @@ async def crawl(db_conn, http_client):
     """
     tasks = []
 
+    temp_queue = asyncio.Queue()
+    queue_lock = asyncio.Lock()
+
     for worker_id in range(NUMBER_OF_WORKERS):
-        task = asyncio.create_task(worker(worker_id, http_client, db_conn))
+        task = asyncio.create_task(worker(worker_id, http_client, db_conn, temp_queue, queue_lock))
         tasks.append(task)
 
     await asyncio.gather(*tasks, return_exceptions=False)
 
 
 
-async def worker(worker_id, http_client, db_conn):
+async def worker(worker_id, http_client, db_conn, temp_queue, queue_lock):
+
+    logging.info(f'DEBUG: Starting worker {worker_id}')
 
     while True:
 
-        # Breadth-first search based on the base_hostname to avoid crawling a
-        # single base_hostname too often too fast
-        q = """
-            SELECT *
-            FROM base_hostname_queue_sample
-            WHERE queue_id % ? = ?
-            LIMIT 100;
-        """
-        async with db_conn.execute(q, (NUMBER_OF_WORKERS, worker_id)) as cursor:
-            async for row in cursor:
-                await process_crawl_queue_row(row, http_client, db_conn)
+        # Get 100 unvisited URLs from 100 random base_hostnames and stick them into a temporary queue
+        async with queue_lock:
 
-                # Report statistics
-                if worker_id == 0:
-                    stat_dict = await http_client.get_statistics()
-                    if stat_dict is not None:
-                        logging.info(f'Statistics: {stat_dict}')
+            if temp_queue.empty():
+
+                logging.info(f'DEBUG: Worker {worker_id} is fetching {number_of_random_base_hostnames} URLs')
+
+                # Breadth-first search based on the base_hostname to avoid crawling a
+                # single base_hostname too often too fast
+                q = """
+                    SELECT
+                        c.queue_id AS queue_id,
+                        c.school_name AS school_name,
+                        c.base_hostname AS base_hostname,
+                        c.depth AS depth,
+                        c.url_to_visit AS url_to_visit,
+                        c.result_webpage_id AS result_webpage_id,
+                        c.referral_queue_id AS referral_queue_id
+                    FROM crawl_queue c
+                    JOIN random_base_hostname_with_min_queue_id r
+                    ON c.queue_id = r.min_queue_id;
+                """
+                async with db_conn.execute(q) as cursor:
+                    async for row in cursor:
+                        await temp_queue.put(row)
+
+                qsize = temp_queue.qsize()
+                logging.info(f'DEBUG: Worker {worker_id} just added {qsize} URLs to the temporary queue')
+
+            row = await temp_queue.get()
+
+        # Process the URLs in the temporary queue
+        await process_crawl_queue_row(row, http_client, db_conn)
+
+        # Report statistics
+        if worker_id == 0:
+            stat_dict = await http_client.get_statistics()
+            if stat_dict is not None:
+                logging.info(f'DEBUG: Statistics: {stat_dict}')
 
 
 async def process_crawl_queue_row(row, http_client, db_conn):
