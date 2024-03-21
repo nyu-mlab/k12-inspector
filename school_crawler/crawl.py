@@ -11,6 +11,7 @@ import logging
 from urllib.parse import urlparse
 import cached_http_client
 import sys
+import traceback
 
 
 CRAWL_QUEUE_TABLE_SCHEMA = """
@@ -183,45 +184,57 @@ async def worker(worker_id, http_client, db_conn, temp_queue, queue_lock):
 
     while True:
 
-        # Get 100 unvisited URLs from 100 random base_hostnames and stick them into a temporary queue
-        async with queue_lock:
+        try:
+            await worker_helper(worker_id, http_client, db_conn, temp_queue, queue_lock)
 
-            if temp_queue.empty():
+        except Exception as e:
+            logging.exception(f'ERROR: Worker {worker_id} encountered an exception: {e} - Traceback: {traceback.format_exc()}')
+            await asyncio.sleep(5)
 
-                logging.info(f'DEBUG: Worker {worker_id} is fetching {number_of_random_base_hostnames} URLs')
 
-                # Breadth-first search based on the base_hostname to avoid crawling a
-                # single base_hostname too often too fast
-                q = """
-                    SELECT
-                        c.queue_id AS queue_id,
-                        c.school_name AS school_name,
-                        c.base_hostname AS base_hostname,
-                        c.depth AS depth,
-                        c.url_to_visit AS url_to_visit,
-                        c.result_webpage_id AS result_webpage_id,
-                        c.referral_queue_id AS referral_queue_id
-                    FROM crawl_queue c
-                    JOIN random_base_hostname_with_min_queue_id r
-                    ON c.queue_id = r.min_queue_id;
-                """
-                async with db_conn.execute(q) as cursor:
-                    async for row in cursor:
-                        await temp_queue.put(row)
 
-                qsize = temp_queue.qsize()
-                logging.info(f'DEBUG: Worker {worker_id} just added {qsize} URLs to the temporary queue')
+async def worker_helper(worker_id, http_client, db_conn, temp_queue, queue_lock):
 
-            row = await temp_queue.get()
+    # Get 100 unvisited URLs from 100 random base_hostnames and stick them into a temporary queue
+    async with queue_lock:
 
-        # Process the URLs in the temporary queue
-        await process_crawl_queue_row(row, http_client, db_conn)
+        if temp_queue.empty():
 
-        # Report statistics
-        if worker_id == 0:
-            stat_dict = await http_client.get_statistics()
-            if stat_dict is not None:
-                logging.info(f'DEBUG: Statistics: {stat_dict}')
+            logging.info(f'DEBUG: Worker {worker_id} is fetching {number_of_random_base_hostnames} URLs')
+
+            # Breadth-first search based on the base_hostname to avoid crawling a
+            # single base_hostname too often too fast
+            q = """
+                SELECT
+                    c.queue_id AS queue_id,
+                    c.school_name AS school_name,
+                    c.base_hostname AS base_hostname,
+                    c.depth AS depth,
+                    c.url_to_visit AS url_to_visit,
+                    c.result_webpage_id AS result_webpage_id,
+                    c.referral_queue_id AS referral_queue_id
+                FROM crawl_queue c
+                JOIN random_base_hostname_with_min_queue_id r
+                ON c.queue_id = r.min_queue_id;
+            """
+            async with db_conn.execute(q) as cursor:
+                async for row in cursor:
+                    await temp_queue.put(row)
+
+            qsize = temp_queue.qsize()
+            logging.info(f'DEBUG: Worker {worker_id} just added {qsize} URLs to the temporary queue')
+
+        row = await temp_queue.get()
+
+    # Process the URLs in the temporary queue
+    await process_crawl_queue_row(row, http_client, db_conn)
+
+    # Report statistics
+    if worker_id == 0:
+        stat_dict = await http_client.get_statistics()
+        if stat_dict is not None:
+            logging.info(f'DEBUG: Statistics: {stat_dict}')
+
 
 
 async def process_crawl_queue_row(row, http_client, db_conn):
@@ -289,6 +302,7 @@ async def process_crawl_queue_row(row, http_client, db_conn):
         """
         async with db_write_lock:
             await db_conn.executemany(q, args)
+
 
 
 def get_hostname_from_url(url) -> str:
