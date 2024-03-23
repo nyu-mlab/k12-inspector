@@ -318,7 +318,7 @@ def get_hostname_from_url(url) -> str:
     if hostname is None:
         hostname = ''
 
-    return hostname
+    return hostname.strip().lower()
 
 
 
