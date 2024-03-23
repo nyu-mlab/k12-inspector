@@ -272,3 +272,53 @@ This SQLite query is designed to retrieve information from the `crawl_queue` tab
 
 **Summary**: The query is structured to discover and list up to 100 random URLs that are part of the Newton Public Schools' web infrastructure but are not hosted on the main website's domain. It filters for depth to exclude the main page, uses string matching to exclude URLs that do not include the base hostname directly (indicating subdomains or external sites still under the school's domain), and ensures all results pertain specifically to Newton Public Schools. This provides a useful tool for analyzing the extent and diversity of the school district's online presence across different subdomains.
 
+
+
+```
+select
+  count(school_name) as school_count,
+  case
+    when lower(dns_info) like '%sharpschool%' then 'SharpSchool'
+    when lower(dns_info) like '%edlio%' then 'Edlio'
+    when lower(dns_info) like '%schoolblocks%' then 'SchoolBlocks'
+    when lower(dns_info) like '%apptegy%' then 'Apptegy'
+    when lower(dns_info) like '%finalsite%' then 'FinalSite'
+    when lower(dns_info) like '%schoolwires%' then 'SchoolWires'
+    else 'Others'
+  end as service_provider
+from
+  (
+    select
+      school_name,
+      base_hostname,
+      dns_info,
+      dns_info_type
+    from
+      hostname a
+      join hostname_dns_info b on a.service_hostname = b.hostname
+    where
+      service_hostname = hostname
+      and base_hostname = service_hostname
+      and dns_info_type = 'CNAME'
+  )
+group by
+  service_provider
+order by
+  school_count desc;
+```
+
+This SQLite query is designed to analyze DNS information, specifically CNAME records, to categorize schools by their service providers based on the DNS info associated with their hostnames. The query operates in several steps:
+
+1. **Subquery Selection**: It begins with a subquery that selects rows from a join between two tables: `hostname` (aliased as `a`) and `hostname_dns_info` (aliased as `b`). The join condition is that `a.service_hostname` matches `b.hostname`, ensuring that the analysis is focused on hostnames that have corresponding DNS info records.
+
+2. **Filtering**: Within this joined data, it filters for rows where `service_hostname` equals `hostname`, `base_hostname` equals `service_hostname`, and the `dns_info_type` is `'CNAME'`. This effectively narrows the data down to CNAME records that match certain criteria, likely aiming to focus on direct service hostnames without considering subdomains or third-party services.
+
+3. **Case-insensitive Search with `LOWER`**: The query then applies a `CASE` statement to categorize each school based on its `dns_info`. By converting `dns_info` to lowercase using `LOWER(dns_info)`, it performs a case-insensitive search for various keywords associated with known service providers (`'sharpschool'`, `'edlio'`, `'schoolblocks'`, `'apptegy'`, `'finalsite'`, `'schoolwires'`). Each keyword match leads to a corresponding categorical label (e.g., `'SharpSchool'`, `'Edlio'`).
+
+4. **Aggregation and Grouping**: The outer query counts the number of schools (`count(school_name)`) for each service provider category determined by the `CASE` statement. This count is performed within groups determined by the `service_provider` alias, effectively aggregating schools by their categorized service provider.
+
+5. **Sorting and Limiting**: Finally, the results are sorted in descending order by `school_count`, showcasing the most common service providers at the top of the list. This order allows for a quick understanding of which service providers are most prevalent within the dataset.
+
+6. **Output**: The output of the query consists of two columns: `school_count`, representing the number of schools using each service provider, and `service_provider`, the name of the service provider or 'Others' for any DNS info that does not match the specified keywords.
+
+This query provides insights into the distribution of web hosting and related services among schools, identifying which service providers are most commonly used based on the analysis of CNAME DNS records.
