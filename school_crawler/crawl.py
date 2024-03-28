@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import cached_http_client
 import sys
 import traceback
+import shutil
 
 
 CRAWL_QUEUE_TABLE_SCHEMA = """
@@ -182,7 +183,7 @@ async def worker(worker_id, http_client, db_conn, temp_queue, queue_lock):
 
     logging.info(f'DEBUG: Starting worker {worker_id}')
 
-    while True:
+    while disk_has_free_space():
 
         try:
             await worker_helper(worker_id, http_client, db_conn, temp_queue, queue_lock)
@@ -327,6 +328,17 @@ async def db_fetch_one(db_conn, q, args=[]):
         row = await cursor.fetchone()
 
     return row
+
+
+def disk_has_free_space():
+    """Returns True if the disk has at least 10 GB of free space."""
+
+    total, used, free = shutil.disk_usage("/")
+    free_gb = free / (1024**3)  # Convert from bytes to GB
+
+    logging.info(f'DEBUG: Free space: {free_gb:.1f} GB')
+
+    return free_gb >= 10
 
 
 
