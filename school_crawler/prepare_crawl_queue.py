@@ -72,7 +72,7 @@ async def worker(worker_id, client, db):
         FROM school_info
         WHERE actual_website_status != '200'
         GROUP BY nces_website
-        HAVING MOD(min_id, ?) = ?
+        HAVING min_id % ? = ?
         ORDER BY RANDOM();
     """
     async for row in get_db_itr(db, q, (NUMBER_OF_WORKERS, worker_id)):
