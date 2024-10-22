@@ -211,9 +211,7 @@ async def worker_helper(worker_id, http_client, db_conn, temp_queue, queue_lock)
                     c.school_name AS school_name,
                     c.base_hostname AS base_hostname,
                     c.depth AS depth,
-                    c.url_to_visit AS url_to_visit,
-                    c.result_webpage_id AS result_webpage_id,
-                    c.referral_queue_id AS referral_queue_id
+                    c.url_to_visit AS url_to_visit
                 FROM crawl_queue c
                 JOIN random_base_hostname_with_min_queue_id r
                 ON c.queue_id = r.min_queue_id;
@@ -239,9 +237,6 @@ async def worker_helper(worker_id, http_client, db_conn, temp_queue, queue_lock)
 
 
 async def process_crawl_queue_row(row, http_client, db_conn):
-
-    if not cached_http_client.is_valid_url(row['url_to_visit']):
-        return
 
     try:
         # Visit the URL
@@ -274,19 +269,30 @@ async def process_crawl_queue_row(row, http_client, db_conn):
     if redirected_url_hostname != row['base_hostname']:
         return
 
-    # Remove the invalid URLs
-    href_list = [href for href in href_list if cached_http_client.is_valid_url(href)]
+    # Prepare the sql arguments for executemany
+    args = []
 
-    args = [
-        (
+    for href in href_list:
+
+        # Check for valid URL
+        if not cached_http_client.is_valid_url(href):
+            continue
+
+        # If link to a different hostname, mark the result_webpage_id as skipped
+        if get_hostname_from_url(href) == row['base_hostname']:
+            result_webpage_id = None
+        else:
+            result_webpage_id = 'skipped:different_base_hostname'
+
+        # Tuple for executemany
+        args.append((
             row['school_name'],
             row['base_hostname'],
             row['depth'] + 1,
             href,
             row['queue_id'],
-        )
-        for href in href_list
-    ]
+            result_webpage_id,
+        ))
 
     if len(args) > 0:
 
@@ -297,9 +303,10 @@ async def process_crawl_queue_row(row, http_client, db_conn):
                 base_hostname,
                 depth,
                 url_to_visit,
-                referral_queue_id
+                referral_queue_id,
+                result_webpage_id
             )
-            VALUES (?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?);
         """
         async with db_write_lock:
             await db_conn.executemany(q, args)
