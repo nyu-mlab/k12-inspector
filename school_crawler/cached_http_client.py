@@ -208,7 +208,7 @@ class CachedHTTPClient(object):
             await self._db.execute(q, (
                 webpage_id,
                 url, redirected_url, int(time.time()), resp.status_code,
-                raw_html, title, text, json.dumps(href_list), json.dumps(metadata)
+                raw_html[0:10000000], title, text, json.dumps(href_list), json.dumps(metadata)
             ))
 
         return (
